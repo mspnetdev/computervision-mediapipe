@@ -1,4 +1,4 @@
-import DeviceDetector from "https://cdn.skypack.dev/device-detector-js@2.2.10";
+import DeviceDetector from "https://cdn.jsdelivr.net/npm/device-detector-js@2.2.10/+esm";
 // Usage: testSupport({client?: string, os?: string}[])
 // Client and os are regular expressions.
 // See: https://cdn.jsdelivr.net/npm/device-detector-js@2.2.10/README.md for
