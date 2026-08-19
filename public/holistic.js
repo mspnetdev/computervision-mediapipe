@@ -41,7 +41,7 @@ const config = { locateFile: (file) => {
 // Our input frames will come from here.
 const videoElement = document.getElementsByClassName('input_video')[0];
 const canvasElement = document.getElementsByClassName('output_canvas')[0];
-const controlsElement = document.getElementsByClassName('control-panel')[0];
+const controlsElement = document.getElementsByClassName('control-panel-host')[0];
 const canvasCtx = canvasElement.getContext('2d');
 // We'll add this to our control panel later, but we'll save it here so we can
 // call tick() each time the graph runs.
@@ -79,11 +79,101 @@ function connect(ctx, connectors) {
     }
 }
 let activeEffect = 'mask';
+let mouthIsOpen = false;
+const handClosedState = { left: null, right: null };
+
+function distanceBetween(firstPoint, secondPoint) {
+    return Math.hypot(firstPoint.x - secondPoint.x, firstPoint.y - secondPoint.y);
+}
+
+function jointAngle(firstPoint, vertex, secondPoint) {
+    const firstVector = {
+        x: firstPoint.x - vertex.x,
+        y: firstPoint.y - vertex.y
+    };
+    const secondVector = {
+        x: secondPoint.x - vertex.x,
+        y: secondPoint.y - vertex.y
+    };
+    const dotProduct = firstVector.x * secondVector.x + firstVector.y * secondVector.y;
+    const firstLength = Math.hypot(firstVector.x, firstVector.y);
+    const secondLength = Math.hypot(secondVector.x, secondVector.y);
+    return Math.acos(Math.max(-1, Math.min(1, dotProduct / (firstLength * secondLength)))) *
+        180 / Math.PI;
+}
+
+function detectMouthOpening(faceLandmarks) {
+    if (!faceLandmarks) {
+        return;
+    }
+    const mouthHeight = distanceBetween(faceLandmarks[13], faceLandmarks[14]);
+    const mouthWidth = distanceBetween(faceLandmarks[61], faceLandmarks[291]);
+    const openness = mouthHeight / mouthWidth;
+    const isOpen = mouthIsOpen ? openness > 0.12 : openness > 0.18;
+    if (isOpen === mouthIsOpen) {
+        return;
+    }
+    mouthIsOpen = isOpen;
+    document.dispatchEvent(new CustomEvent(isOpen ? 'mouthopen' : 'mouthclose', {
+        detail: { openness }
+    }));
+}
+
+function detectClosedHand(handLandmarks, handSide) {
+    if (!handLandmarks) {
+        handClosedState[handSide] = null;
+        return;
+    }
+    const fingerJoints = [[5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16], [17, 18, 19, 20]];
+    const extendedFingers = fingerJoints.filter(([baseIndex, jointIndex, middleIndex, tipIndex]) => {
+        const fingerAngle = jointAngle(handLandmarks[baseIndex], handLandmarks[jointIndex], handLandmarks[middleIndex]);
+        return fingerAngle > 115 && distanceBetween(handLandmarks[tipIndex], handLandmarks[0]) >
+            distanceBetween(handLandmarks[jointIndex], handLandmarks[0]);
+    }).length;
+    const thumbIsExtended = jointAngle(handLandmarks[2], handLandmarks[3], handLandmarks[4]) > 125 &&
+        distanceBetween(handLandmarks[4], handLandmarks[5]) >
+        distanceBetween(handLandmarks[3], handLandmarks[5]) * 1.2;
+    const totalExtendedFingers = extendedFingers + (thumbIsExtended ? 1 : 0);
+    const isClosed = totalExtendedFingers === 0;
+    if (totalExtendedFingers === handClosedState[handSide]) {
+        return;
+    }
+    handClosedState[handSide] = totalExtendedFingers;
+    document.dispatchEvent(new CustomEvent(isClosed ? 'handclosed' : 'handopen', {
+        detail: { hand: handSide, extendedFingers: totalExtendedFingers }
+    }));
+}
+
+const eventMessage = document.getElementById('event-message');
+
+function logEvent(message) {
+    eventMessage.textContent = message;
+}
+
+document.addEventListener('mouthopen', (event) => {
+    logEvent('Bocca aperta');
+});
+
+document.addEventListener('mouthclose', () => {
+    logEvent('Bocca chiusa');
+});
+
+document.addEventListener('handclosed', (event) => {
+    logEvent(`Mano chiusa - ${event.detail.extendedFingers} dita`);
+});
+
+document.addEventListener('handopen', (event) => {
+    logEvent(`Mano aperta - ${event.detail.extendedFingers} dita`);
+});
+
 function onResults(results) {
     // Hide the spinner.
     document.body.classList.add('loaded');
     // Remove landmarks we don't want to draw.
     removeLandmarks(results);
+    detectMouthOpening(results.faceLandmarks);
+    detectClosedHand(results.leftHandLandmarks, 'left');
+    detectClosedHand(results.rightHandLandmarks, 'right');
     // Update the frame rate.
     fpsControl.tick();
     // Draw the overlays.
@@ -131,11 +221,13 @@ function onResults(results) {
         }
     }
     // Pose...
-    drawingUtils.drawConnectors(canvasCtx, results.poseLandmarks, mpHolistic.POSE_CONNECTIONS, { color: 'white' });
-    drawingUtils.drawLandmarks(canvasCtx, Object.values(mpHolistic.POSE_LANDMARKS_LEFT)
-        .map(index => results.poseLandmarks[index]), { visibilityMin: 0.65, color: 'white', fillColor: 'rgb(255,138,0)' });
-    drawingUtils.drawLandmarks(canvasCtx, Object.values(mpHolistic.POSE_LANDMARKS_RIGHT)
-        .map(index => results.poseLandmarks[index]), { visibilityMin: 0.65, color: 'white', fillColor: 'rgb(0,217,231)' });
+    if (results.poseLandmarks) {
+        drawingUtils.drawConnectors(canvasCtx, results.poseLandmarks, mpHolistic.POSE_CONNECTIONS, { color: 'white' });
+        drawingUtils.drawLandmarks(canvasCtx, Object.values(mpHolistic.POSE_LANDMARKS_LEFT)
+            .map(index => results.poseLandmarks[index]), { visibilityMin: 0.65, color: 'white', fillColor: 'rgb(255,138,0)' });
+        drawingUtils.drawLandmarks(canvasCtx, Object.values(mpHolistic.POSE_LANDMARKS_RIGHT)
+            .map(index => results.poseLandmarks[index]), { visibilityMin: 0.65, color: 'white', fillColor: 'rgb(0,217,231)' });
+    }
     // Hands...
     drawingUtils.drawConnectors(canvasCtx, results.rightHandLandmarks, mpHolistic.HAND_CONNECTIONS, { color: 'white' });
     drawingUtils.drawLandmarks(canvasCtx, results.rightHandLandmarks, {
@@ -238,3 +330,25 @@ new controls
     activeEffect = x['effect'];
     holistic.setOptions(options);
 });
+
+const panelShell = controlsElement.querySelector('.control-panel-shell');
+const commandPanel = panelShell?.querySelector('.control-panel');
+if (panelShell && commandPanel) {
+    panelShell.remove();
+    controlsElement.appendChild(commandPanel);
+    commandPanel.classList.add('commands-panel');
+
+    const hamburger = document.createElement('button');
+    hamburger.type = 'button';
+    hamburger.className = 'commands-toggle';
+    hamburger.textContent = '☰';
+    hamburger.setAttribute('aria-label', 'Mostra o nascondi il pannello dei comandi');
+    hamburger.title = 'Mostra o nascondi il pannello dei comandi';
+    commandPanel.classList.add('commands-panel-hidden');
+    hamburger.setAttribute('aria-expanded', 'false');
+    hamburger.addEventListener('click', () => {
+        const isHidden = commandPanel.classList.toggle('commands-panel-hidden');
+        hamburger.setAttribute('aria-expanded', String(!isHidden));
+    });
+    controlsElement.appendChild(hamburger);
+}
